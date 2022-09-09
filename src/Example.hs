@@ -14,35 +14,23 @@ module Example where
 data Term
   = And Term Term
   | Lambda Term
-  | Apply Term Term -- argument must not be lambda
+  | Apply Term Term
   | All Term Term
   | Truth
   | Integer Integer
   | Plus Term Term
-  | Var Int -- must not refer to a lambda
+  | Var Int
   deriving (Show)
-
--- How many arguments does this term need to be applied to
-{-@ measure arity @-}
-arity :: Term -> Int
-arity (And _ _) = 0
-arity (Lambda x) = arity x + 1
-arity (Apply f _) = arity f - 1
-arity (All _ _) = 0
-arity Truth = 0
-arity (Integer _) = 0
-arity (Plus _ _) = 0
-arity (Var _) = 0
 
 {-@ measure wellFormed @-}
 wellFormed :: Term -> Bool
-wellFormed (And a b) = freeVarBound a >= 0 && freeVarBound b >= 0 && arity a == 0 && arity b == 0 && wellFormed a && wellFormed b
+wellFormed (And a b) = freeVarBound a >= 0 && freeVarBound b >= 0 && wellFormed a && wellFormed b
 wellFormed (Lambda x) = wellFormed x && freeVarBound x >= 0
-wellFormed (Apply f x) = arity x == 0 && arity f > 0 && wellFormed x && wellFormed f && freeVarBound f >= 0 && freeVarBound x >= 0
-wellFormed (All f x) = arity x == 0 && arity f > 0 && wellFormed x && wellFormed f && freeVarBound f >= 0 && freeVarBound x >= 0
+wellFormed (Apply f x) = wellFormed x && wellFormed f && freeVarBound f >= 0 && freeVarBound x >= 0
+wellFormed (All f x) = wellFormed x && wellFormed f && freeVarBound f >= 0 && freeVarBound x >= 0
 wellFormed Truth = True
 wellFormed (Integer _) = True
-wellFormed (Plus a b) = freeVarBound a >= 0 && freeVarBound b >= 0 && arity a == 0 && arity b == 0 && wellFormed a && wellFormed b
+wellFormed (Plus a b) = freeVarBound a >= 0 && freeVarBound b >= 0 && wellFormed a && wellFormed b
 wellFormed (Var i) = i >= 0
 
 {-@ measure freeVarBound @-}
@@ -56,13 +44,17 @@ freeVarBound (Integer _) = 0
 freeVarBound (Plus a b) = if freeVarBound a > freeVarBound b then freeVarBound a else freeVarBound b
 freeVarBound (Var i) = i + 1
 
-{-@ exA :: {t : Term | wellFormed t && freeVarBound t = 0 && arity t = 0} @-}
+{-@ exA :: {t : Term | wellFormed t && freeVarBound t = 0 } @-}
 exA :: Term
 exA = Apply (Lambda (Plus (Integer 42) (Var 0))) (Integer 55)
 
-{-@ exB :: {t : Term | wellFormed t && freeVarBound t = 0 && arity t = 0} @-}
+{-@ exB :: {t : Term | wellFormed t && freeVarBound t = 0 } @-}
 exB :: Term
 exB = Apply (Apply (Lambda (Lambda (Plus (Var 0) (Var 1)))) (Integer 97)) (Integer 42)
+
+{-@ exC :: {t : Term | wellFormed t && freeVarBound t = 0 } @-}
+exC :: Term
+exC = Apply (Lambda (Var 0)) (Lambda (Var 0))
 
 data Context
   = ContextCons Term Context
@@ -78,9 +70,10 @@ contextSize (ContextConsOpaque c) = 1 + contextSize c
 {-@ measure allWellFormed @-}
 allWellFormed :: Context -> Bool
 allWellFormed ContextNil = True
-allWellFormed (ContextCons t c) = wellFormed t && freeVarBound t >= 0 && freeVarBound t <= contextSize c && arity t == 0 && allWellFormed c
+allWellFormed (ContextCons t c) = wellFormed t && freeVarBound t >= 0 && freeVarBound t <= contextSize c && allWellFormed c
 allWellFormed (ContextConsOpaque c) = allWellFormed c
 
+-- Not used as a measure. Only used to make sure that fullEval terminates.
 size :: Term -> Int
 size (And a b) = 1 + size a + size b
 size (Plus a b) = 1 + size a + size b
@@ -93,7 +86,7 @@ size Var{} = 1
 
 {-@ fullEval ::
      {t : Term | wellFormed t && freeVarBound t >= 0 && freeVarBound t <= 0 } ->
-     {r : Term | wellFormed r && freeVarBound r >= 0 && freeVarBound r <= 0 && arity r = arity t}
+     {r : Term | wellFormed r && freeVarBound r >= 0 && freeVarBound r <= 0 }
 @-}
 fullEval :: Term -> Term
 fullEval a =
@@ -103,7 +96,7 @@ fullEval a =
 {-@ evaluate ::
      {ctx : Int | ctx >= 0} ->
      {t : Term | wellFormed t && freeVarBound t >= 0 && freeVarBound t <= ctx } ->
-     {r : Term | wellFormed r && freeVarBound r >= 0 && freeVarBound r <= ctx && arity r = arity t}
+     {r : Term | wellFormed r && freeVarBound r >= 0 && freeVarBound r <= ctx }
 @-}
 evaluate :: Int -> Term -> Term
 evaluate ctx (Apply lam arg) = case lam of
@@ -121,18 +114,12 @@ evaluate ctx (Plus a b) = case a of
 evaluate _ Truth = Truth
 evaluate _ (Integer i) = Integer i
 
-{-@ lookupVar :: {ctx : Context | allWellFormed ctx } -> {v : Int | v >=0 && v < contextSize ctx} -> Maybe {r : Term | wellFormed r && freeVarBound r >= 0 && freeVarBound r <= contextSize ctx && arity r = 0 } @-}
-lookupVar :: Context -> Int -> Maybe Term
-lookupVar (ContextCons t ctx) i = if i == 0 then Just t else lookupVar ctx (i - 1)
-lookupVar (ContextConsOpaque ctx) i = if i == 0 then Nothing else lookupVar ctx (i - 1)
-lookupVar ContextNil _ = error "lookupVar: impossible"
-
 {-@ substitute ::
      {var : Int | var >= 0} ->
      {ctx : Int | ctx >= 1 && var < ctx} ->
-     {content : Term | wellFormed content && arity content = 0 && freeVarBound content >= 0 && freeVarBound content < ctx - var } ->
+     {content : Term | wellFormed content && freeVarBound content >= 0 && freeVarBound content < ctx - var } ->
      {haystack : Term | wellFormed haystack && freeVarBound haystack >= 0 && freeVarBound haystack <= ctx } ->
-     {out : Term | wellFormed out && arity out = arity haystack && freeVarBound out >= 0 && freeVarBound out < ctx }
+     {out : Term | wellFormed out && freeVarBound out >= 0 && freeVarBound out < ctx }
 @-}
 substitute :: Int -> Int -> Term -> Term -> Term
 substitute var ctx content haystack = case haystack of
@@ -153,7 +140,7 @@ substitute var ctx content haystack = case haystack of
      {cutoff : Int | cutoff >= 0} ->
      {n : Int | n >= 0} ->
      {t : Term | wellFormed t && freeVarBound t >= 0 } ->
-     {r : Term | wellFormed r && freeVarBound r >= 0 && freeVarBound r <= freeVarBound t + n && arity r = arity t }
+     {r : Term | wellFormed r && freeVarBound r >= 0 && freeVarBound r <= freeVarBound t + n }
 @-}
 incrVars :: Int -> Int -> Term -> Term
 incrVars cutoff n t = case t of
@@ -166,6 +153,6 @@ incrVars cutoff n t = case t of
   Apply f x -> Apply (incrVars cutoff n f) (incrVars cutoff n x)
   All f x -> All (incrVars cutoff n f) (incrVars cutoff n x)
 
-{-@ example :: {t : Term | wellFormed t && freeVarBound t = 0 && arity t = 0 } @-}
+{-@ example :: {t : Term | wellFormed t && freeVarBound t = 0 } @-}
 example :: Term
 example = Apply (Apply (Lambda (Lambda (Plus (Var 0) (Var 1)))) (Integer 5)) (Integer 42)
